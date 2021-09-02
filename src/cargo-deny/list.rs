@@ -1,10 +1,9 @@
 use ansi_term::Color;
 use anyhow::{Context, Error};
 use cargo_deny::{diag::Files, licenses, Kid};
-use clap::arg_enum;
 use serde::Serialize;
 use std::path::PathBuf;
-use structopt::StructOpt;
+use structopt::{clap::arg_enum, StructOpt};
 
 arg_enum! {
     #[derive(Copy, Clone, Debug)]
@@ -66,10 +65,13 @@ pub struct Args {
 struct Config {
     #[serde(default)]
     targets: Vec<crate::common::Target>,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 struct ValidConfig {
     targets: Vec<(krates::Target, Vec<String>)>,
+    exclude: Vec<String>,
 }
 
 impl ValidConfig {
@@ -93,6 +95,7 @@ impl ValidConfig {
 
                 return Ok(Self {
                     targets: Vec::new(),
+                    exclude: Vec::new(),
                 });
             }
             None => {
@@ -100,6 +103,7 @@ impl ValidConfig {
 
                 return Ok(Self {
                     targets: Vec::new(),
+                    exclude: Vec::new(),
                 });
             }
         };
@@ -117,8 +121,9 @@ impl ValidConfig {
         let validate = || -> Result<(Vec<Diagnostic>, Self), Vec<Diagnostic>> {
             let mut diagnostics = Vec::new();
             let targets = crate::common::load_targets(cfg.targets, &mut diagnostics, id);
+            let exclude = cfg.exclude;
 
-            Ok((diagnostics, Self { targets }))
+            Ok((diagnostics, Self { targets, exclude }))
         };
 
         let print = |diags: Vec<Diagnostic>| {
@@ -129,7 +134,7 @@ impl ValidConfig {
             if let Some(printer) = crate::common::DiagPrinter::new(log_ctx, None) {
                 let mut lock = printer.lock();
                 for diag in diags {
-                    lock.print(diag, &files);
+                    lock.print(diag, files);
                 }
             }
         };
@@ -164,7 +169,7 @@ pub fn cmd(
     let cfg = ValidConfig::load(krate_ctx.get_config_path(args.config), &mut files, log_ctx)?;
 
     let (krates, store) = rayon::join(
-        || krate_ctx.gather_krates(cfg.targets),
+        || krate_ctx.gather_krates(cfg.targets, cfg.exclude),
         crate::common::load_license_store,
     );
 
@@ -219,7 +224,7 @@ pub fn cmd(
             };
 
             match krate_lic_nfo.lic_info {
-                LicenseInfo::SPDXExpression { expr, .. } => {
+                LicenseInfo::SpdxExpression { expr, .. } => {
                     for req in expr.requirements() {
                         let s = req.req.to_string();
 

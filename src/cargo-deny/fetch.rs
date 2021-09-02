@@ -3,9 +3,8 @@ use cargo_deny::{
     advisories,
     diag::{Diagnostic, Files},
 };
-use clap::arg_enum;
 use std::path::PathBuf;
-use structopt::StructOpt;
+use structopt::{clap::arg_enum, StructOpt};
 
 arg_enum! {
     #[derive(Debug, PartialEq, Copy, Clone)]
@@ -46,6 +45,8 @@ impl ValidConfig {
         files: &mut Files,
         log_ctx: crate::common::LogContext,
     ) -> Result<Self, Error> {
+        use cargo_deny::UnvalidatedConfig;
+
         let (cfg_contents, cfg_path) = match cfg_path {
             Some(cfg_path) if cfg_path.exists() => (
                 std::fs::read_to_string(&cfg_path).with_context(|| {
@@ -82,24 +83,27 @@ impl ValidConfig {
             if let Some(printer) = crate::common::DiagPrinter::new(log_ctx, None) {
                 let mut lock = printer.lock();
                 for diag in diags {
-                    lock.print(diag, &files);
+                    lock.print(diag, files);
                 }
             }
         };
 
-        let advisories = match cfg.advisories.unwrap_or_default().validate(id) {
-            Ok(advisories) => advisories,
-            Err(diags) => {
-                print(diags);
+        let mut diags = Vec::new();
+        let advisories = cfg.advisories.unwrap_or_default().validate(id, &mut diags);
 
-                anyhow::bail!(
-                    "failed to validate configuration file {}",
-                    cfg_path.display()
-                );
-            }
-        };
+        let has_errors = diags
+            .iter()
+            .any(|d| d.severity >= cargo_deny::diag::Severity::Error);
+        print(diags);
 
-        Ok(Self { advisories })
+        if has_errors {
+            anyhow::bail!(
+                "failed to validate configuration file {}",
+                cfg_path.display()
+            );
+        } else {
+            Ok(Self { advisories })
+        }
     }
 }
 
@@ -114,7 +118,7 @@ pub fn cmd(
     let cfg = ValidConfig::load(cfg_path, &mut files, log_ctx)?;
 
     let mut index = None;
-    let mut db = None;
+    let mut dbs = None;
 
     rayon::scope(|s| {
         let fetch_index = args.sources.is_empty()
@@ -140,11 +144,15 @@ pub fn cmd(
         if fetch_db {
             s.spawn(|_| {
                 // This function already logs internally
-                db = Some(advisories::load_db(
-                    cfg.advisories.db_url.as_ref().map(AsRef::as_ref),
-                    cfg.advisories.db_path.as_ref().cloned(),
+                dbs = Some(advisories::DbSet::load(
+                    cfg.advisories.db_path,
+                    cfg.advisories
+                        .db_urls
+                        .into_iter()
+                        .map(|dburl| dburl.take())
+                        .collect(),
                     advisories::Fetch::Allow,
-                ))
+                ));
             });
         }
     });
@@ -153,8 +161,8 @@ pub fn cmd(
         index.context("failed to fetch crates.io index")?;
     }
 
-    if let Some(db) = db {
-        db.context("failed to fetch database")?;
+    if let Some(dbs) = dbs {
+        dbs.context("failed to fetch database")?;
     }
 
     Ok(())

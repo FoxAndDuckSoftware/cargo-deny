@@ -1,14 +1,10 @@
-#![warn(clippy::all)]
-#![warn(rust_2018_idioms)]
-#![cfg_attr(docsrs, feature(external_doc))]
-
 //! # ❌ cargo-deny
 //!
 //! [![Build Status](https://github.com/EmbarkStudios/cargo-deny/workflows/CI/badge.svg)](https://github.com/EmbarkStudios/cargo-deny/actions?workflow=CI)
 //! [![Latest version](https://img.shields.io/crates/v/cargo-deny.svg)](https://crates.io/crates/cargo-deny)
 //! [![Docs](https://img.shields.io/badge/docs-The%20Book-green.svg)](https://embarkstudios.github.io/cargo-deny/)
 //! [![API Docs](https://docs.rs/cargo-deny/badge.svg)](https://docs.rs/cargo-deny)
-//! [![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.7-blue.svg)](https://spdx.org/licenses/)
+//! [![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.11-blue.svg)](https://spdx.org/licenses/)
 //! [![Contributor Covenant](https://img.shields.io/badge/contributor%20covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 //! [![Embark](https://img.shields.io/badge/embark-open%20source-blueviolet.svg)](http://embark.dev)
 //!
@@ -17,7 +13,7 @@
 //! ## [Quickstart](https://embarkstudios.github.io/cargo-deny/)
 //!
 //! ```bash
-//! cargo install cargo-deny && cargo deny init && cargo deny check
+//! cargo install --locked cargo-deny && cargo deny init && cargo deny check
 //! ```
 //!
 //! ## Usage
@@ -25,7 +21,7 @@
 //! ### [Install](https://embarkstudios.github.io/cargo-deny/cli/index.html) cargo-deny
 //!
 //! ```bash
-//! cargo install cargo-deny
+//! cargo install --locked cargo-deny
 //! ```
 //!
 //! ### [Initialize](https://embarkstudios.github.io/cargo-deny/cli/init.html) your project
@@ -72,20 +68,93 @@
 //! cargo deny check sources
 //! ```
 
+// BEGIN - Embark standard lints v0.4
+// do not change or add/remove here, but one can add exceptions after this section
+// for more info see: <https://github.com/EmbarkStudios/rust-ecosystem/issues/59>
+#![deny(unsafe_code)]
+#![warn(
+    clippy::all,
+    clippy::await_holding_lock,
+    clippy::char_lit_as_u8,
+    clippy::checked_conversions,
+    clippy::dbg_macro,
+    clippy::debug_assert_with_mut_call,
+    clippy::doc_markdown,
+    clippy::empty_enum,
+    clippy::enum_glob_use,
+    clippy::exit,
+    clippy::expl_impl_clone_on_copy,
+    clippy::explicit_deref_methods,
+    clippy::explicit_into_iter_loop,
+    clippy::fallible_impl_from,
+    clippy::filter_map_next,
+    clippy::float_cmp_const,
+    clippy::fn_params_excessive_bools,
+    clippy::if_let_mutex,
+    clippy::implicit_clone,
+    clippy::imprecise_flops,
+    clippy::inefficient_to_string,
+    clippy::invalid_upcast_comparisons,
+    clippy::large_types_passed_by_value,
+    clippy::let_unit_value,
+    clippy::linkedlist,
+    clippy::lossy_float_literal,
+    clippy::macro_use_imports,
+    clippy::manual_ok_or,
+    clippy::map_err_ignore,
+    clippy::map_flatten,
+    clippy::map_unwrap_or,
+    clippy::match_on_vec_items,
+    clippy::match_same_arms,
+    clippy::match_wildcard_for_single_variants,
+    clippy::mem_forget,
+    clippy::mismatched_target_os,
+    clippy::mut_mut,
+    clippy::mutex_integer,
+    clippy::needless_borrow,
+    clippy::needless_continue,
+    clippy::option_option,
+    clippy::path_buf_push_overwrite,
+    clippy::ptr_as_ptr,
+    clippy::ref_option_ref,
+    clippy::rest_pat_in_fully_bound_structs,
+    clippy::same_functions_in_if_condition,
+    clippy::semicolon_if_nothing_returned,
+    clippy::string_add_assign,
+    clippy::string_add,
+    clippy::string_lit_as_bytes,
+    clippy::string_to_string,
+    clippy::todo,
+    clippy::trait_duplication_in_bounds,
+    clippy::unimplemented,
+    clippy::unnested_or_patterns,
+    clippy::unused_self,
+    clippy::useless_transmute,
+    clippy::verbose_file_reads,
+    clippy::zero_sized_map_values,
+    future_incompatible,
+    nonstandard_style,
+    rust_2018_idioms
+)]
+// END - Embark standard lints v0.4
+#![allow(clippy::from_over_into)]
+
 pub use semver::Version;
-use std::{cmp, collections::HashMap, path::PathBuf};
+use std::{cmp, collections::HashMap, fmt};
 
 pub mod advisories;
 pub mod bans;
 mod cfg;
 pub mod diag;
+mod index;
 /// Configuration and logic for checking crate licenses
 pub mod licenses;
+pub mod manifest;
 pub mod sources;
 
-pub use cfg::Spanned;
+pub use cfg::{Spanned, UnvalidatedConfig};
 use krates::cm;
-pub use krates::{DepKind, Kid};
+pub use krates::{DepKind, Kid, Utf8PathBuf};
 pub use rustsec::package::source::SourceId;
 
 /// The possible lint levels for the various lints. These function similarly
@@ -109,6 +178,10 @@ impl Default for LintLevel {
     }
 }
 
+const fn lint_allow() -> LintLevel {
+    LintLevel::Allow
+}
+
 const fn lint_warn() -> LintLevel {
     LintLevel::Warn
 }
@@ -126,9 +199,9 @@ pub struct Krate {
     pub authors: Vec<String>,
     pub repository: Option<String>,
     pub description: Option<String>,
-    pub manifest_path: PathBuf,
+    pub manifest_path: Utf8PathBuf,
     pub license: Option<String>,
-    pub license_file: Option<PathBuf>,
+    pub license_file: Option<Utf8PathBuf>,
     pub deps: Vec<cm::Dependency>,
     pub features: HashMap<String, Vec<String>>,
     pub targets: Vec<cm::Target>,
@@ -152,7 +225,7 @@ impl Default for Krate {
             license_file: None,
             targets: Vec::new(),
             features: HashMap::new(),
-            manifest_path: PathBuf::new(),
+            manifest_path: Utf8PathBuf::new(),
             repository: None,
             publish: None,
         }
@@ -238,17 +311,20 @@ impl Krate {
     /// Returns true if the crate is marked as `publish = false`, or
     /// it is only published to the specified private registries
     pub(crate) fn is_private(&self, private_registries: &[&str]) -> bool {
-        self.publish
-            .as_ref()
-            .map(|v| {
-                if v.is_empty() {
-                    true
-                } else {
-                    v.iter()
-                        .all(|reg| private_registries.contains(&reg.as_str()))
-                }
-            })
-            .unwrap_or(false)
+        self.publish.as_ref().map_or(false, |v| {
+            if v.is_empty() {
+                true
+            } else {
+                v.iter()
+                    .all(|reg| private_registries.contains(&reg.as_str()))
+            }
+        })
+    }
+}
+
+impl fmt::Display for Krate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} = {}", self.name, self.version)
     }
 }
 
@@ -292,17 +368,7 @@ pub struct CheckCtx<'ctx, T> {
     pub krates: &'ctx Krates,
     /// The spans for each unique crate in a synthesized "lock file"
     pub krate_spans: &'ctx diag::KrateSpans,
-    /// The codespan file id for the synthesized krate_spans
-    pub spans_id: diag::FileId,
     /// Requests for additional information the check can provide to be
     /// serialized to the diagnostic
     pub serialize_extra: bool,
-    pub cargo_spans: Option<diag::CargoSpans>,
-}
-
-impl<'ctx, T> CheckCtx<'ctx, T> {
-    pub(crate) fn label_for_span(&self, krate_index: usize, msg: impl Into<String>) -> diag::Label {
-        diag::Label::secondary(self.spans_id, self.krate_spans[krate_index].clone())
-            .with_message(msg)
-    }
 }

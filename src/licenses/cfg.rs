@@ -77,7 +77,8 @@ pub struct Private {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct FileSource {
     /// The crate relative path of the LICENSE file
-    pub path: PathBuf,
+    /// Spanned so we can report typos on it in case it never matches anything.
+    pub path: Spanned<PathBuf>,
     /// The hash of the LICENSE text. If the `path`'s hash
     /// differs from the contents of the path, the file is
     /// parsed to determine if the license(s) contained in
@@ -181,16 +182,16 @@ impl Default for Config {
     }
 }
 
-impl Config {
+impl crate::cfg::UnvalidatedConfig for Config {
+    type ValidCfg = ValidConfig;
+
     /// Validates the configuration provided by the user.
     ///
     /// 1. Ensures all SPDX identifiers are valid
     /// 1. Ensures all SPDX expressions are valid
     /// 1. Ensures the same license is not both allowed and denied
-    pub fn validate(self, cfg_file: FileId) -> Result<ValidConfig, Vec<Diagnostic>> {
+    fn validate(self, cfg_file: FileId, diags: &mut Vec<Diagnostic>) -> Self::ValidCfg {
         use rayon::prelude::*;
-
-        let mut diagnostics = Vec::new();
 
         let mut parse_license = |ls: &Spanned<String>, v: &mut Vec<Licensee>| {
             match spdx::Licensee::parse(ls.as_ref()) {
@@ -200,13 +201,12 @@ impl Config {
                 Err(pe) => {
                     let offset = ls.span.start + 1;
                     let span = pe.span.start + offset..pe.span.end + offset;
-                    let diag = Diagnostic::error()
-                        .with_message("invalid licensee")
-                        .with_labels(vec![
-                            Label::primary(cfg_file, span).with_message(format!("{}", pe.reason))
-                        ]);
-
-                    diagnostics.push(diag);
+                    diags.push(
+                        Diagnostic::error()
+                            .with_message("invalid licensee")
+                            .with_labels(vec![Label::primary(cfg_file, span)
+                                .with_message(format!("{}", pe.reason))]),
+                    );
                 }
             }
         };
@@ -234,27 +234,26 @@ impl Config {
 
             exceptions.push(ValidException {
                 name: exc.name,
-                version: exc.version.unwrap_or_else(VersionReq::any),
+                version: exc.version.unwrap_or(VersionReq::STAR),
                 allowed,
             });
         }
-
-        exceptions.par_sort();
 
         // Ensure the config doesn't contain the same exact license as both
         // denied and allowed, that's confusing and probably not intended, so
         // they should pick one
         for (di, d) in denied.iter().enumerate() {
-            if let Ok(ai) = allowed.binary_search(&d) {
-                let diag = Diagnostic::error()
-                    .with_message("a license id was specified in both `allow` and `deny`")
-                    .with_labels(vec![
-                        Label::secondary(cfg_file, self.deny[di].span.clone()).with_message("deny"),
-                        Label::secondary(cfg_file, self.allow[ai].span.clone())
-                            .with_message("allow"),
-                    ]);
-
-                diagnostics.push(diag);
+            if let Ok(ai) = allowed.binary_search(d) {
+                diags.push(
+                    Diagnostic::error()
+                        .with_message("a license id was specified in both `allow` and `deny`")
+                        .with_labels(vec![
+                            Label::secondary(cfg_file, self.deny[di].span.clone())
+                                .with_message("deny"),
+                            Label::secondary(cfg_file, self.allow[ai].span.clone())
+                                .with_message("allow"),
+                        ]),
+                );
             }
         }
 
@@ -266,7 +265,7 @@ impl Config {
                     let offset = c.expression.span.start + 1;
                     let expr_span = offset + err.span.start..offset + err.span.end;
 
-                    diagnostics.push(
+                    diags.push(
                         Diagnostic::error()
                             .with_message("unable to parse license expression")
                             .with_labels(vec![Label::primary(cfg_file, expr_span)
@@ -282,37 +281,31 @@ impl Config {
 
             clarifications.push(ValidClarification {
                 name: c.name,
-                version: c.version.unwrap_or_else(VersionReq::any),
+                version: c.version.unwrap_or(VersionReq::STAR),
                 expr_offset: (c.expression.span.start + 1),
                 expression: expr,
                 license_files,
             });
         }
 
-        clarifications.par_sort();
-
-        if !diagnostics.is_empty() {
-            Err(diagnostics)
-        } else {
-            Ok(ValidConfig {
-                file_id: cfg_file,
-                private: self.private,
-                unlicensed: self.unlicensed,
-                copyleft: self.copyleft,
-                default: self.default,
-                allow_osi_fsf_free: self.allow_osi_fsf_free,
-                confidence_threshold: self.confidence_threshold,
-                clarifications,
-                exceptions,
-                denied,
-                allowed,
-            })
+        ValidConfig {
+            file_id: cfg_file,
+            private: self.private,
+            unlicensed: self.unlicensed,
+            copyleft: self.copyleft,
+            default: self.default,
+            allow_osi_fsf_free: self.allow_osi_fsf_free,
+            confidence_threshold: self.confidence_threshold,
+            clarifications,
+            exceptions,
+            denied,
+            allowed,
         }
     }
 }
 
 #[doc(hidden)]
-#[cfg_attr(test, derive(Debug))]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ValidClarification {
     pub name: String,
     pub version: VersionReq,
@@ -322,7 +315,7 @@ pub struct ValidClarification {
 }
 
 #[doc(hidden)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ValidException {
     pub name: crate::Spanned<String>,
     pub version: VersionReq,
@@ -361,10 +354,12 @@ mod test {
 
         let cd: ConfigData<Licenses> = load("tests/cfg/licenses.toml");
 
-        let validated = cd.config.licenses.validate(cd.id).unwrap();
+        let mut diags = Vec::new();
+        let validated = cd.config.licenses.validate(cd.id, &mut diags);
+        assert!(diags.is_empty());
 
         assert_eq!(validated.file_id, cd.id);
-        assert_eq!(validated.private.ignore, true);
+        assert!(validated.private.ignore);
         assert_eq!(validated.private.registries, vec!["sekrets".to_owned()]);
         assert_eq!(validated.unlicensed, LintLevel::Warn);
         assert_eq!(validated.copyleft, LintLevel::Deny);
@@ -392,6 +387,7 @@ mod test {
                 version: semver::VersionReq::parse("0.1.1").unwrap(),
             }]
         );
+        let p: PathBuf = "LICENSE".into();
         assert_eq!(
             validated.clarifications,
             vec![ValidClarification {
@@ -399,10 +395,10 @@ mod test {
                 version: semver::VersionReq::parse("*").unwrap(),
                 expression: spdx::Expression::parse("MIT AND ISC AND OpenSSL").unwrap(),
                 license_files: vec![FileSource {
-                    path: "LICENSE".into(),
+                    path: p.fake(),
                     hash: 0xbd0e_ed23,
                 }],
-                expr_offset: 415,
+                expr_offset: 432,
             }]
         );
     }

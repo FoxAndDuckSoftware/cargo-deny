@@ -1,6 +1,16 @@
 use serde::{de, ser};
 use std::fmt;
 
+pub trait UnvalidatedConfig {
+    type ValidCfg;
+
+    fn validate(
+        self,
+        id: crate::diag::FileId,
+        diagnostics: &mut Vec<crate::diag::Diagnostic>,
+    ) -> Self::ValidCfg;
+}
+
 pub(crate) const NAME: &str = "$__toml_private_Spanned";
 pub(crate) const START: &str = "$__toml_private_start";
 pub(crate) const END: &str = "$__toml_private_end";
@@ -20,6 +30,11 @@ impl<T> Spanned<T> {
     #[inline]
     pub fn span(&self) -> &std::ops::Range<usize> {
         &self.span
+    }
+
+    #[inline]
+    pub fn take(self) -> T {
+        self.value
     }
 }
 
@@ -111,7 +126,7 @@ impl<'de, T> de::Deserialize<'de> for Spanned<T>
 where
     T: de::Deserialize<'de>,
 {
-    fn deserialize<D>(deserializer: D) -> Result<Spanned<T>, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: de::Deserializer<'de>,
     {
@@ -172,6 +187,24 @@ impl<T: ser::Serialize> ser::Serialize for Spanned<T> {
     }
 }
 
+pub(crate) fn parse_url(
+    cfg_file: crate::diag::FileId,
+    urls: Spanned<String>,
+) -> Result<Spanned<url::Url>, crate::diag::Diagnostic> {
+    url::Url::parse(urls.as_ref())
+        .map(|url| Spanned {
+            value: url,
+            span: urls.span.clone(),
+        })
+        .map_err(|pe| {
+            crate::diag::Diagnostic::error()
+                .with_message("failed to parse url")
+                .with_labels(vec![
+                    crate::diag::Label::primary(cfg_file, urls.span).with_message(pe.to_string())
+                ])
+        })
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use crate::diag::{FileId, Files};
@@ -179,7 +212,7 @@ pub(crate) mod test {
 
     pub(crate) struct ConfigData<T> {
         pub(crate) config: T,
-        pub(crate) files: Files,
+        pub(crate) _files: Files,
         pub(crate) id: FileId,
     }
 
@@ -191,6 +224,10 @@ pub(crate) mod test {
         let mut files = Files::new();
         let id = files.add(&path, contents);
 
-        ConfigData { config, files, id }
+        ConfigData {
+            config,
+            _files: files,
+            id,
+        }
     }
 }

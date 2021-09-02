@@ -1,9 +1,24 @@
 [sources]
 unknown-registry = "allow"
 unknown-git = "deny"
+required-git-spec = "tag"
 allow-registry = [
     "https://sekretz.com/registry/index",
 ]
 allow-git = [
-    "https://notgithub.com/orgname/reponame",
+    "https://notgithub.com/orgname/reponame.git",
+]
+private = [
+    "https://internal-host/repos",
+]
+[sources.allow-org]
+github = [
+    "yourghid",
+    "YourOrg",
+]
+gitlab = [
+    "gitlab-org",
+]
+bitbucket = [
+    "atlassian",
 ]

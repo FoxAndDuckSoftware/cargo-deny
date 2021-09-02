@@ -57,6 +57,9 @@ pub struct KrateContext {
     pub no_default_features: bool,
     pub all_features: bool,
     pub features: Vec<String>,
+    pub frozen: bool,
+    pub locked: bool,
+    pub offline: bool,
 }
 
 impl KrateContext {
@@ -90,22 +93,20 @@ impl KrateContext {
     pub fn gather_krates(
         self,
         cfg_targets: Vec<(krates::Target, Vec<String>)>,
+        cfg_excludes: Vec<String>,
     ) -> Result<cargo_deny::Krates, anyhow::Error> {
         log::info!("gathering crates for {}", self.manifest_path.display());
         let start = std::time::Instant::now();
 
-        let mut mdc = krates::Cmd::new();
-
-        if self.no_default_features {
-            mdc.no_default_features();
-        }
-
-        if self.all_features {
-            mdc.all_features();
-        }
-
-        mdc.features(self.features);
-        mdc.manifest_path(self.manifest_path);
+        let metadata = get_metadata(MetadataOptions {
+            no_default_features: self.no_default_features,
+            all_features: self.all_features,
+            features: self.features,
+            manifest_path: self.manifest_path,
+            frozen: self.frozen,
+            locked: self.locked,
+            offline: self.offline,
+        })?;
 
         use krates::{Builder, DepKind};
 
@@ -122,10 +123,11 @@ impl KrateContext {
         gb.ignore_kind(DepKind::Dev, krates::Scope::NonWorkspace);
         gb.workspace(self.workspace);
 
-        if !self.exclude.is_empty() {
+        if !self.exclude.is_empty() || !cfg_excludes.is_empty() {
             gb.exclude(
                 self.exclude
                     .into_iter()
+                    .chain(cfg_excludes)
                     .filter_map(|spec| match spec.parse() {
                         Ok(spec) => Some(spec),
                         Err(e) => {
@@ -135,16 +137,21 @@ impl KrateContext {
                     }),
             );
         }
-        let graph = gb.build(mdc, |filtered: krates::cm::Package| match filtered.source {
-            Some(src) => {
-                if src.is_crates_io() {
-                    log::debug!("filtered {} {}", filtered.name, filtered.version);
-                } else {
-                    log::debug!("filtered {} {} {}", filtered.name, filtered.version, src);
+
+        let graph =
+            gb.build_with_metadata(metadata, |filtered: krates::cm::Package| {
+                match filtered.source {
+                    Some(src) => {
+                        if src.is_crates_io() {
+                            log::debug!("filtered {} {}", filtered.name, filtered.version);
+                        } else {
+                            log::debug!("filtered {} {} {}", filtered.name, filtered.version, src);
+                        }
+                    }
+                    None => log::debug!("filtered {} {}", filtered.name, filtered.version),
                 }
-            }
-            None => log::debug!("filtered {} {}", filtered.name, filtered.version),
-        });
+            });
+
         if let Ok(ref krates) = graph {
             let end = std::time::Instant::now();
             log::info!(
@@ -158,14 +165,100 @@ impl KrateContext {
     }
 }
 
+struct MetadataOptions {
+    no_default_features: bool,
+    all_features: bool,
+    features: Vec<String>,
+    manifest_path: PathBuf,
+    frozen: bool,
+    locked: bool,
+    offline: bool,
+}
+
+#[cfg(not(feature = "standalone"))]
+fn get_metadata(opts: MetadataOptions) -> Result<krates::cm::Metadata, anyhow::Error> {
+    let mut mdc = krates::Cmd::new();
+
+    if opts.no_default_features {
+        mdc.no_default_features();
+    }
+
+    if opts.all_features {
+        mdc.all_features();
+    }
+
+    mdc.features(opts.features)
+        .manifest_path(opts.manifest_path)
+        .lock_opts(krates::LockOptions {
+            frozen: opts.frozen,
+            locked: opts.locked,
+            offline: opts.offline,
+        });
+
+    let mdc: krates::cm::MetadataCommand = mdc.into();
+    Ok(mdc.exec()?)
+}
+
+#[cfg(feature = "standalone")]
+fn get_metadata(opts: MetadataOptions) -> Result<krates::cm::Metadata, anyhow::Error> {
+    use anyhow::Context;
+    use cargo::{core, ops, util};
+
+    let mut config = util::Config::default()?;
+
+    config.configure(
+        0,
+        true,
+        None,
+        opts.frozen,
+        opts.locked,
+        opts.offline,
+        &None,
+        &[],
+        &[],
+    )?;
+
+    let mut manifest_path = opts.manifest_path;
+
+    // Cargo doesn't like non-absolute paths
+    if !manifest_path.is_absolute() {
+        manifest_path = std::env::current_dir()
+            .context("unable to determine current directory")?
+            .join(manifest_path);
+    }
+
+    let features = std::rc::Rc::new(
+        opts.features
+            .into_iter()
+            .map(|feat| core::FeatureValue::new(util::interning::InternedString::new(&feat)))
+            .collect(),
+    );
+
+    let ws = core::Workspace::new(&manifest_path, &config)?;
+    let options = ops::OutputMetadataOptions {
+        cli_features: core::resolver::features::CliFeatures {
+            features,
+            all_features: opts.all_features,
+            uses_default_features: !opts.no_default_features,
+        },
+        no_deps: false,
+        version: 1,
+        filter_platforms: vec![],
+    };
+
+    let md = ops::output_metadata(&ws, &options)?;
+    let md_value = serde_json::to_value(md)?;
+
+    Ok(serde_json::from_value(md_value)?)
+}
+
 pub fn log_level_to_severity(log_level: log::LevelFilter) -> Option<Severity> {
     match log_level {
         log::LevelFilter::Off => None,
         log::LevelFilter::Error => Some(Severity::Error),
         log::LevelFilter::Warn => Some(Severity::Warning),
         log::LevelFilter::Info => Some(Severity::Note),
-        log::LevelFilter::Debug => Some(Severity::Help),
-        log::LevelFilter::Trace => Some(Severity::Help),
+        log::LevelFilter::Debug | log::LevelFilter::Trace => Some(Severity::Help),
     }
 }
 
@@ -188,7 +281,7 @@ fn color_to_choice(color: crate::Color, stream: atty::Stream) -> ColorChoice {
     }
 }
 
-type CSDiag = codespan_reporting::diagnostic::Diagnostic<FileId>;
+type CsDiag = codespan_reporting::diagnostic::Diagnostic<FileId>;
 
 pub struct Human<'a> {
     stream: term::termcolor::StandardStream,
@@ -260,64 +353,7 @@ pub enum OutputLock<'a, 'b> {
 }
 
 impl<'a, 'b> OutputLock<'a, 'b> {
-    fn diag_to_json(diag: CSDiag, files: &Files) -> serde_json::Value {
-        let mut val = serde_json::json!({
-            "type": "diagnostic",
-            "fields": {
-                "severity": match diag.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                    Severity::Note => "note",
-                    Severity::Help => "help",
-                    Severity::Bug => "bug",
-                },
-                "message": diag.message,
-            },
-        });
-
-        {
-            let obj = val.as_object_mut().unwrap();
-            let obj = obj.get_mut("fields").unwrap().as_object_mut().unwrap();
-
-            if let Some(code) = diag.code {
-                obj.insert("code".to_owned(), serde_json::Value::String(code));
-            }
-
-            if !diag.labels.is_empty() {
-                let mut labels = Vec::with_capacity(diag.labels.len());
-
-                for label in diag.labels {
-                    let location = files
-                        .location(label.file_id, label.range.start as u32)
-                        .unwrap();
-                    labels.push(serde_json::json!({
-                        "message": label.message,
-                        "span": &files.source(label.file_id)[label.range],
-                        "line": location.line.to_usize() + 1,
-                        "column": location.column.to_usize() + 1,
-                    }));
-                }
-
-                obj.insert("labels".to_owned(), serde_json::Value::Array(labels));
-            }
-
-            if !diag.notes.is_empty() {
-                obj.insert(
-                    "notes".to_owned(),
-                    serde_json::Value::Array(
-                        diag.notes
-                            .into_iter()
-                            .map(serde_json::Value::String)
-                            .collect(),
-                    ),
-                );
-            }
-        }
-
-        val
-    }
-
-    pub fn print(&mut self, diag: CSDiag, files: &Files) {
+    pub fn print(&mut self, diag: CsDiag, files: &Files) {
         match self {
             Self::Human(cfg, max, l) => {
                 if diag.severity < *max {
@@ -331,7 +367,7 @@ impl<'a, 'b> OutputLock<'a, 'b> {
                     return;
                 }
 
-                let to_print = Self::diag_to_json(diag, files);
+                let to_print = diag::cs_diag_to_json(diag, files);
 
                 use serde::Serialize;
 
@@ -366,27 +402,7 @@ impl<'a, 'b> OutputLock<'a, 'b> {
                     return;
                 }
 
-                let mut to_print = Self::diag_to_json(diag.diag, files);
-
-                let obj = to_print.as_object_mut().unwrap();
-                let fields = obj.get_mut("fields").unwrap().as_object_mut().unwrap();
-
-                if let Some(grapher) = &cfg.grapher {
-                    let mut graphs = Vec::new();
-                    for kid in diag.kids {
-                        if let Ok(graph) = grapher.write_graph(&kid) {
-                            if let Ok(sgraph) = serde_json::value::to_value(graph) {
-                                graphs.push(sgraph);
-                            }
-                        }
-                    }
-
-                    fields.insert("graphs".to_owned(), serde_json::Value::Array(graphs));
-                }
-
-                if let Some((key, val)) = diag.extra {
-                    fields.insert(key.to_owned(), val);
-                }
+                let to_print = diag::diag_to_json(diag, files, cfg.grapher.as_ref());
 
                 use serde::Serialize;
 

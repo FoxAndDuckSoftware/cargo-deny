@@ -1,29 +1,43 @@
-# ❌ cargo-deny
+<div align="center">
 
-[![Build Status](https://github.com/EmbarkStudios/cargo-deny/workflows/CI/badge.svg)](https://github.com/EmbarkStudios/cargo-deny/actions?workflow=CI)
-[![Latest version](https://img.shields.io/crates/v/cargo-deny.svg)](https://crates.io/crates/cargo-deny)
-[![Docs](https://img.shields.io/badge/The%20Book-📕-brightgreen.svg)](https://embarkstudios.github.io/cargo-deny/)
+# `❌ cargo-deny`
+
+**Cargo plugin for linting your dependencies**
+
+[![Embark Opensource](https://img.shields.io/badge/embark-open%20source-blueviolet.svg)](https://embark.dev)
+[![Embark Discord](https://img.shields.io/badge/discord-ark-%237289da.svg?logo=discord)](https://discord.gg/Fg4u4VX)
+[![Crates.io](https://img.shields.io/crates/v/cargo-deny.svg)](https://crates.io/crates/cargo-deny)
 [![API Docs](https://docs.rs/cargo-deny/badge.svg)](https://docs.rs/cargo-deny)
-[![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.7-blue.svg)](https://spdx.org/licenses/)
-[![Contributor Covenant](https://img.shields.io/badge/contributor%20covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
-[![Embark](https://img.shields.io/badge/embark-open%20source-blueviolet.svg)](http://embark.dev)
+[![Docs](https://img.shields.io/badge/The%20Book-📕-brightgreen.svg)](https://embarkstudios.github.io/cargo-deny/)
+[![Minimum Stable Rust Version](https://img.shields.io/badge/Rust-1.53.0-blue?color=fc8d62&logo=rust)](https://blog.rust-lang.org/2021/06/17/Rust-1.53.0.html)
+[![SPDX Version](https://img.shields.io/badge/SPDX%20Version-3.14-blue.svg)](https://spdx.org/licenses/)
+[![dependency status](https://deps.rs/repo/github/EmbarkStudios/cargo-deny/status.svg)](https://deps.rs/repo/github/EmbarkStudios/cargo-deny)
+[![Build Status](https://github.com/EmbarkStudios/cargo-deny/workflows/CI/badge.svg)](https://github.com/EmbarkStudios/cargo-deny/actions?workflow=CI)
 
-`cargo-deny` is a cargo plugin for linting your dependencies. See the [book 📕](https://embarkstudios.github.io/cargo-deny/) for in-depth documentation.
+</div>
+
+See the [book 📕](https://embarkstudios.github.io/cargo-deny/) for in-depth documentation.
 
 To run on CI as a GitHub Action, see [`cargo-deny-action`](https://github.com/EmbarkStudios/cargo-deny-action).
+
+_Please Note: This is a tool that we use (and like!) and it makes sense to us to release it as open source. However, we can’t take any responsibility for your use of the tool, if it will function correctly or fulfil your needs. No functionality in - or information provided by - cargo-deny constitutes legal advice._
 
 ## [Quickstart](https://embarkstudios.github.io/cargo-deny/)
 
 ```bash
-cargo install cargo-deny && cargo deny init && cargo deny check
+cargo install --locked cargo-deny && cargo deny init && cargo deny check
 ```
 
 ## Usage
 
 ### [Install](https://embarkstudios.github.io/cargo-deny/cli/index.html) cargo-deny
 
+If you want to use `cargo-deny` without having `cargo` installed,
+build `cargo-deny` with the `standalone` feature.
+This can be useful in Docker Images.
+
 ```bash
-cargo install cargo-deny
+cargo install --locked cargo-deny
 
 # Or, if you're an Arch user
 yay -S cargo-deny
@@ -82,6 +96,8 @@ cargo deny check sources
 <img src="https://imgur.com/xdHFDWS.png"/>
 
 ## Contributing
+
+[![Contributor Covenant](https://img.shields.io/badge/contributor%20covenant-v1.4-ff69b4.svg)](../CODE_OF_CONDUCT.md)
 
 We welcome community contributions to this project.
 

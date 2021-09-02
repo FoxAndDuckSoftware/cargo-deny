@@ -1,261 +1,260 @@
-use anyhow::{ensure, Error};
 use cargo_deny::{
     advisories::{self, cfg},
-    diag::{self, FileId, Files},
     Krates,
 };
-use krates::cm::Metadata;
-use std::sync::RwLock;
+#[macro_use]
+mod utils;
 
-struct Ctx {
+struct TestCtx {
+    dbs: advisories::DbSet,
+    lock: advisories::PrunedLockfile,
     krates: Krates,
-    spans: (diag::KrateSpans, FileId),
-    db: advisories::Database,
-    lock: advisories::Lockfile,
-    files: RwLock<Files>,
 }
 
-fn load() -> Ctx {
-    let md: Metadata =
-        serde_json::from_str(&std::fs::read_to_string("tests/06_advisories.json").unwrap())
-            .unwrap();
+fn iter_notes(diag: &serde_json::Value) -> Option<impl Iterator<Item = &str>> {
+    diag.pointer("/fields/notes")
+        .and_then(|notes| notes.as_array())
+        .map(|array| array.iter().filter_map(|s| s.as_str()))
+}
+
+fn find_by_code<'a>(
+    diags: &'a [serde_json::Value],
+    code: &'_ str,
+) -> Option<&'a serde_json::Value> {
+    diags.iter().find(|v| match iter_notes(v) {
+        Some(mut notes) => notes.any(|note| note.contains(code)),
+        None => false,
+    })
+}
+
+fn load() -> TestCtx {
+    let md: krates::cm::Metadata = serde_json::from_str(
+        &std::fs::read_to_string("tests/test_data/advisories/06_advisories.json").unwrap(),
+    )
+    .unwrap();
 
     let krates: Krates = krates::Builder::new()
         .build_with_metadata(md, krates::NoneFilter)
         .unwrap();
 
-    let spans = diag::KrateSpans::new(&krates);
-    //let lock = advisories::generate_lockfile(&krates);
-    let lock = advisories::load_lockfile(&std::path::Path::new("tests/06_Cargo.lock")).unwrap();
+    let lock = advisories::load_lockfile(krates::Utf8Path::new(
+        "tests/test_data/advisories/06_Cargo.lock",
+    ))
+    .unwrap();
 
     let db = {
         let tmp = tempfile::tempdir().unwrap();
-        advisories::load_db(None, Some(tmp.path().to_owned()), advisories::Fetch::Allow).unwrap()
+        advisories::DbSet::load(Some(tmp), vec![], advisories::Fetch::Allow).unwrap()
     };
 
-    let mut files = Files::new();
-    let spans = (spans.0, files.add("Cargo.lock", spans.1));
+    let lockfile = advisories::PrunedLockfile::prune(lock, &krates);
 
-    Ctx {
+    TestCtx {
+        dbs: db,
+        lock: lockfile,
         krates,
-        spans,
-        lock,
-        db,
-        files: RwLock::new(files),
     }
-}
-
-fn load_cfg(ctx: &Ctx, test_name: &str, cfg_str: String) -> Result<cfg::ValidConfig, Error> {
-    let cfg: advisories::cfg::Config = toml::from_str(&cfg_str)?;
-
-    let cfg_id = ctx
-        .files
-        .write()
-        .unwrap()
-        .add(test_name.to_owned(), cfg_str);
-
-    cfg.validate(cfg_id)
-        .map_err(|_| anyhow::anyhow!("failed to load {}", test_name))
 }
 
 #[test]
 #[ignore]
 fn detects_vulnerabilities() {
-    let (tx, rx) = crossbeam::channel::unbounded();
-    let ctx = load();
+    let TestCtx { dbs, lock, krates } = load();
 
-    let cfg = load_cfg(
-        &ctx,
+    let cfg = "vulnerability = 'deny'";
+
+    let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+        krates,
         "detects_vulnerabilities",
-        "vulnerability = \"deny\"".into(),
+        Some(cfg),
+        None,
+        |ctx, _, tx| {
+            advisories::check(
+                ctx,
+                &dbs,
+                lock,
+                Option::<advisories::NoneReporter>::None,
+                tx,
+            );
+        },
     )
     .unwrap();
 
-    let (_, vuln_res) = rayon::join(
-        || {
-            let ctx2 = cargo_deny::CheckCtx {
-                cfg,
-                krates: &ctx.krates,
-                krate_spans: &ctx.spans.0,
-                spans_id: ctx.spans.1,
-                serialize_extra: true,
-                cargo_spans: None,
-            };
+    let vuln_diag = find_by_code(&diags, "RUSTSEC-2019-0001").unwrap();
 
-            advisories::check(ctx2, &ctx.db, ctx.lock, tx);
-        },
-        || {
-            let mut res = Err(anyhow::anyhow!("failed to receive unmaintained"));
-
-            for msg in rx {
-                for diag in msg.into_iter() {
-                    let diag = diag.diag;
-                    if diag.code == Some("RUSTSEC-2019-0001".to_owned()) {
-                        ensure!(
-                            diag.severity == diag::Severity::Error,
-                            dbg!(dbg!(diag.severity) == diag::Severity::Error)
-                        );
-                        ensure!(
-                            diag.message == "Uncontrolled recursion leads to abort in HTML serialization",
-                            dbg!(dbg!(diag.message) == "Uncontrolled recursion leads to abort in HTML serialization")
-                        );
-                        ensure!(
-                            diag.labels[0].message == "security vulnerability detected",
-                            dbg!(
-                                dbg!(&diag.labels[0].message) == "security vulnerability detected"
-                            )
-                        );
-
-                        res = Ok(());
-                    }
-                }
-            }
-
-            res
-        },
+    assert_field_eq!(vuln_diag, "/fields/severity", "error");
+    assert_field_eq!(
+        vuln_diag,
+        "/fields/message",
+        "Uncontrolled recursion leads to abort in HTML serialization"
     );
-
-    vuln_res.unwrap()
+    assert_field_eq!(
+        vuln_diag,
+        "/fields/labels/0/message",
+        "security vulnerability detected"
+    );
 }
+
+// #[test]
+// #[ignore]
+// fn detects_prereleases() {
+//     let TestCtx { dbs, lock, krates } = load();
+
+//     let cfg = "vulnerability = 'deny'";
+
+//     let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+//         krates,
+//         "detects_prereleases",
+//         Some(cfg),
+//         None,
+//         |ctx, _, tx| {
+//             advisories::check(
+//                 ctx,
+//                 &dbs,
+//                 lock,
+//                 Option::<advisories::NoneReporter>::None,
+//                 tx,
+//             );
+//         },
+//     )
+//     .unwrap();
+
+//     println!("{:#?}", diags);
+
+//     let vuln_diag = find_by_code(&diags, "RUSTSEC-2020-0069").unwrap();
+
+//     assert_field_eq!(vuln_diag, "/fields/severity", "error");
+//     assert_field_eq!(
+//         vuln_diag,
+//         "/fields/message",
+//         "advisory for a crate with a pre-release was skipped as it matched a patch"
+//     );
+//     assert_field_eq!(vuln_diag, "/fields/labels/0/message", "pre-release crate");
+
+//     assert!(iter_notes(vuln_diag)
+//         .expect("expected notes on diag")
+//         .any(|s| s == "Satisfied version requirement: >=0.5.0-alpha.3"));
+// }
 
 #[test]
 #[ignore]
 fn detects_unmaintained() {
-    let (tx, rx) = crossbeam::channel::unbounded();
+    let TestCtx { dbs, lock, krates } = load();
 
-    let ctx = load();
-    let cfg = load_cfg(
-        &ctx,
+    let cfg = "unmaintained = 'warn'";
+
+    let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+        krates,
         "detects_unmaintained",
-        "unmaintained = \"warn\"".into(),
+        Some(cfg),
+        None,
+        |ctx, _, tx| {
+            advisories::check(
+                ctx,
+                &dbs,
+                lock,
+                Option::<advisories::NoneReporter>::None,
+                tx,
+            );
+        },
     )
     .unwrap();
 
-    let (_, unmaintained_res) = rayon::join(
-        || {
-            let ctx2 = cargo_deny::CheckCtx {
-                cfg,
-                krates: &ctx.krates,
-                krate_spans: &ctx.spans.0,
-                spans_id: ctx.spans.1,
-                serialize_extra: true,
-                cargo_spans: None,
-            };
+    let unmaintained_diag = find_by_code(&diags, "RUSTSEC-2016-0004").unwrap();
 
-            advisories::check(ctx2, &ctx.db, ctx.lock, tx);
-        },
-        || {
-            let mut res = Err(anyhow::anyhow!("failed to receive unmaintained"));
-
-            for msg in rx {
-                for diag in msg.into_iter() {
-                    let diag = diag.diag;
-                    if diag.code == Some("RUSTSEC-2016-0004".to_owned()) {
-                        ensure!(
-                            diag.severity == diag::Severity::Warning,
-                            dbg!(dbg!(diag.severity) == diag::Severity::Warning)
-                        );
-                        ensure!(
-                            diag.message == "libusb is unmaintained; use rusb instead",
-                            dbg!(dbg!(diag.message) == "libusb is unmaintained; use rusb instead")
-                        );
-                        ensure!(
-                            diag.labels[0].message == "unmaintained advisory detected",
-                            dbg!(dbg!(&diag.labels[0].message) == "unmaintained advisory detected")
-                        );
-
-                        res = Ok(());
-                    }
-                }
-            }
-
-            res
-        },
+    assert_field_eq!(unmaintained_diag, "/fields/severity", "warning");
+    assert_field_eq!(
+        unmaintained_diag,
+        "/fields/message",
+        "libusb is unmaintained; use rusb instead"
     );
-
-    unmaintained_res.unwrap()
+    assert_field_eq!(
+        unmaintained_diag,
+        "/fields/labels/0/message",
+        "unmaintained advisory detected"
+    );
 }
 
 #[test]
 #[ignore]
-fn downgrades() {
-    let (tx, rx) = crossbeam::channel::unbounded();
+fn detects_unsound() {
+    let TestCtx { dbs, lock, krates } = load();
 
-    let ctx = load();
-    let cfg = load_cfg(
-        &ctx,
-        "downgrades",
-        "unmaintained = \"warn\"\nignore = [\"RUSTSEC-2016-0004\",\"RUSTSEC-2019-0001\"]".into(),
+    let cfg = "unsound = 'warn'";
+
+    let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+        krates,
+        "detects_unsound",
+        Some(cfg),
+        None,
+        |ctx, _, tx| {
+            advisories::check(
+                ctx,
+                &dbs,
+                lock,
+                Option::<advisories::NoneReporter>::None,
+                tx,
+            );
+        },
     )
     .unwrap();
 
-    let (_, down_res) = rayon::join(
-        || {
-            let ctx2 = cargo_deny::CheckCtx {
-                cfg,
-                krates: &ctx.krates,
-                krate_spans: &ctx.spans.0,
-                spans_id: ctx.spans.1,
-                serialize_extra: true,
-                cargo_spans: None,
-            };
+    let unsound_diag = find_by_code(&diags, "RUSTSEC-2019-0036").unwrap();
 
-            advisories::check(ctx2, &ctx.db, ctx.lock, tx);
-        },
-        || {
-            let mut got_ammonia_vuln = false;
-            let mut got_libusb_adv = false;
+    assert_field_eq!(unsound_diag, "/fields/severity", "warning");
+    assert_field_eq!(
+        unsound_diag,
+        "/fields/message",
+        "Type confusion if __private_get_type_id__ is overridden"
+    );
+    assert_field_eq!(
+        unsound_diag,
+        "/fields/labels/0/message",
+        "unsound advisory detected"
+    );
+    assert_field_eq!(
+        unsound_diag,
+        "/fields/labels/0/span",
+        "failure 0.1.8 registry+https://github.com/rust-lang/crates.io-index"
+    );
+}
 
-            for msg in rx {
-                for diag in msg.into_iter() {
-                    let diag = diag.diag;
-                    if diag.code == Some("RUSTSEC-2019-0001".to_owned()) {
-                        ensure!(
-                            diag.severity == diag::Severity::Help,
-                            dbg!(dbg!(diag.severity) == diag::Severity::Help)
-                        );
-                        ensure!(
-                            diag.message == "Uncontrolled recursion leads to abort in HTML serialization",
-                            dbg!(dbg!(diag.message) == "Uncontrolled recursion leads to abort in HTML serialization")
-                        );
-                        ensure!(
-                            diag.labels[0].message == "security vulnerability detected",
-                            dbg!(
-                                dbg!(&diag.labels[0].message) == "security vulnerability detected"
-                            )
-                        );
+#[test]
+#[ignore]
+fn downgrades_lint_levels() {
+    let TestCtx { dbs, lock, krates } = load();
 
-                        got_ammonia_vuln = true;
-                    }
+    let cfg = "unmaintained = 'warn'
+    ignore = ['RUSTSEC-2016-0004', 'RUSTSEC-2019-0001']";
 
-                    if diag.code == Some("RUSTSEC-2016-0004".to_owned()) {
-                        ensure!(
-                            diag.severity == diag::Severity::Help,
-                            dbg!(dbg!(diag.severity) == diag::Severity::Help)
-                        );
-                        ensure!(
-                            diag.message == "libusb is unmaintained; use rusb instead",
-                            dbg!(dbg!(diag.message) == "libusb is unmaintained; use rusb instead")
-                        );
-                        ensure!(
-                            diag.labels[0].message == "unmaintained advisory detected",
-                            dbg!(dbg!(&diag.labels[0].message) == "unmaintained advisory detected")
-                        );
-
-                        got_libusb_adv = true;
-                    }
-                }
-            }
-
-            ensure!(
-                got_ammonia_vuln && got_libusb_adv,
-                dbg!(dbg!(got_ammonia_vuln) && dbg!(got_libusb_adv))
+    let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+        krates,
+        "downgrades_lint_levels",
+        Some(cfg),
+        None,
+        |ctx, _, tx| {
+            advisories::check(
+                ctx,
+                &dbs,
+                lock,
+                Option::<advisories::NoneReporter>::None,
+                tx,
             );
-            Ok(())
         },
+    )
+    .unwrap();
+
+    assert_field_eq!(
+        find_by_code(&diags, "RUSTSEC-2016-0004").unwrap(),
+        "/fields/severity",
+        "help"
     );
 
-    down_res.unwrap()
+    assert_field_eq!(
+        find_by_code(&diags, "RUSTSEC-2019-0001").unwrap(),
+        "/fields/severity",
+        "help"
+    );
 }
 
 #[test]
@@ -264,55 +263,41 @@ fn detects_yanked() {
     // Force fetch the index just in case
     rustsec::registry::Index::fetch().unwrap();
 
-    let (tx, rx) = crossbeam::channel::unbounded();
-    let ctx = load();
+    let TestCtx { dbs, lock, krates } = load();
 
-    let cfg = load_cfg(&ctx, "detects_yanked", "yanked = \"deny\"".into()).unwrap();
+    let cfg = "yanked = 'deny'
+    unmaintained = 'allow'
+    vulnerability = 'allow'
+    ";
 
-    let (_, yanked_res) = rayon::join(
-        || {
-            let ctx2 = cargo_deny::CheckCtx {
-                cfg,
-                krates: &ctx.krates,
-                krate_spans: &ctx.spans.0,
-                spans_id: ctx.spans.1,
-                serialize_extra: true,
-                cargo_spans: None,
-            };
-
-            advisories::check(ctx2, &ctx.db, ctx.lock, tx);
+    let diags = utils::gather_diagnostics::<cfg::Config, _, _>(
+        krates,
+        "detects_yanked",
+        Some(cfg),
+        None,
+        |ctx, _, tx| {
+            advisories::check(
+                ctx,
+                &dbs,
+                lock,
+                Option::<advisories::NoneReporter>::None,
+                tx,
+            );
         },
-        || {
-            let mut res = Err(anyhow::anyhow!("failed to receive yanked"));
+    )
+    .unwrap();
 
-            for msg in rx {
-                for diag in msg.into_iter() {
-                    let diag = diag.diag;
+    let yanked = ["spdx 0.3.1 registry+https://github.com/rust-lang/crates.io-index"];
 
-                    if diag.code.is_none() {
-                        ensure!(
-                            diag.severity == diag::Severity::Error,
-                            dbg!(dbg!(diag.severity) == diag::Severity::Error)
-                        );
-
-                        ensure!(
-                            diag.message == "detected yanked crate",
-                            dbg!(dbg!(diag.message) == "detected yanked crate")
-                        );
-
-                        ensure!(
-                            diag.labels[0].message == "yanked version",
-                            dbg!(dbg!(&diag.labels[0].message) == "yanked version")
-                        );
-
-                        res = Ok(());
-                    }
-                }
-            }
-
-            res
-        },
-    );
-
-    yanked_res.unwrap()
+    for yanked in &yanked {
+        assert!(
+            diags.iter().any(|v| {
+                field_eq!(v, "/fields/severity", "error")
+                    && field_eq!(v, "/fields/message", "detected yanked crate")
+                    && field_eq!(v, "/fields/labels/0/span", yanked)
+            }),
+            "failed to find yanked diagnostic for '{}'",
+            yanked
+        );
+    }
 }

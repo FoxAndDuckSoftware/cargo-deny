@@ -1,7 +1,9 @@
 # cargo-deny is really only ever intended to run on the "normal" tier-1 targets
 targets = [
     { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
     { triple = "x86_64-unknown-linux-musl" },
+    { triple = "aarch64-apple-darwin" },
     { triple = "x86_64-apple-darwin" },
     { triple = "x86_64-pc-windows-msvc" },
 ]
@@ -10,6 +12,12 @@ targets = [
 vulnerability = "deny"
 unmaintained = "deny"
 notice = "deny"
+unsound = "deny"
+ignore = [
+    # askalono uses failure, which is now unmaintained
+    "RUSTSEC-2019-0036",
+    "RUSTSEC-2020-0036",
+]
 
 [bans]
 multiple-versions = "deny"
@@ -18,10 +26,12 @@ deny = [
 skip = [
     # clap uses an older version of ansi_term
     { name = "ansi_term", version = "=0.11.0" },
-    # rustsec uses an older version of semver
-    { name = "semver", version = "0.9.0" },
-    # in a surprise twist, semver uses an older version of semver-parser
-    { name = "semver-parser", version = "=0.7.0" },
+    # cargo uses crypto-hash, which uses an old version
+    { name = "hex", version = "=0.3.2" },
+    # im-rc, used by cargo, uses an old version of rand_core
+    { name = "rand_core", version = "=0.5.1" },
+    # askalono pulls in an ancient version of zstd that uses an outdated itertools
+    { name = "itertools", version = "=0.9.0" },
 ]
 
 [sources]
@@ -39,8 +49,10 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
+    "MPL-2.0",
 ]
 
 exceptions = [
     { allow = ["Zlib"], name = "tinyvec" },
+    { allow = ["Apache-2.0", "BSD-2-Clause"], name = "crossbeam-queue" },
 ]

@@ -1,11 +1,15 @@
-use std::collections::HashMap;
-use std::ops::Range;
-use std::path::PathBuf;
+mod obj_grapher;
+mod sink;
+mod text_grapher;
 
-use crate::{DepKind, Kid, Krate, Krates};
-use anyhow::{Context, Error};
+pub use obj_grapher::{cs_diag_to_json, diag_to_json, ObjectGrapher};
+pub use sink::ErrorSink;
+pub use text_grapher::TextGrapher;
+
+use std::{collections::HashMap, ops::Range};
+
+use crate::{Kid, Krates};
 pub use codespan_reporting::diagnostic::Severity;
-use krates::petgraph as pg;
 
 pub use codespan::FileId;
 
@@ -13,9 +17,19 @@ pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<FileId>;
 pub type Label = codespan_reporting::diagnostic::Label<FileId>;
 pub type Files = codespan::Files<String>;
 // Map of crate id => (path to cargo.toml, synthetic cargo.toml content, map(cratename => crate span))
-pub type RawCargoSpans = HashMap<Kid, (PathBuf, String, HashMap<String, Range<usize>>)>;
+pub type RawCargoSpans = HashMap<Kid, (krates::Utf8PathBuf, String, HashMap<String, Range<usize>>)>;
 // Same as RawCargoSpans but path to cargo.toml and cargo.toml content replaced with FileId
 pub type CargoSpans = HashMap<Kid, (FileId, HashMap<String, Range<usize>>)>;
+
+impl Into<Severity> for crate::LintLevel {
+    fn into(self) -> Severity {
+        match self {
+            Self::Warn => Severity::Warning,
+            Self::Deny => Severity::Error,
+            Self::Allow => Severity::Note,
+        }
+    }
+}
 
 pub struct Diag {
     pub diag: Diagnostic,
@@ -116,6 +130,7 @@ pub struct KrateSpan {
 
 pub struct KrateSpans {
     spans: Vec<KrateSpan>,
+    pub file_id: FileId,
 }
 
 impl std::ops::Index<usize> for KrateSpans {
@@ -128,7 +143,11 @@ impl std::ops::Index<usize> for KrateSpans {
 }
 
 impl KrateSpans {
-    pub fn new(krates: &Krates) -> (Self, String, RawCargoSpans) {
+    pub fn with_spans(spans: Vec<KrateSpan>, id: FileId) -> Self {
+        Self { spans, file_id: id }
+    }
+
+    pub fn synthesize(krates: &Krates) -> (Vec<KrateSpan>, String, RawCargoSpans) {
         use std::fmt::Write;
 
         let mut sl = String::with_capacity(4 * 1024);
@@ -145,7 +164,7 @@ impl KrateSpans {
                     "{} {} {}",
                     krate.name,
                     krate.version,
-                    krate.manifest_path.parent().unwrap().to_string_lossy()
+                    krate.manifest_path.parent().unwrap()
                 )
                 .expect("unable to synthesize lockfile"),
             };
@@ -173,241 +192,46 @@ impl KrateSpans {
             );
         }
 
-        (Self { spans }, sl, cargo_spans)
+        (spans, sl, cargo_spans)
+    }
+
+    #[inline]
+    pub fn label_for_index(&self, krate_index: usize, msg: impl Into<String>) -> Label {
+        Label::secondary(self.file_id, self.spans[krate_index].span.clone()).with_message(msg)
+    }
+
+    #[inline]
+    pub fn get_coord(&self, krate_index: usize) -> KrateCoord {
+        KrateCoord {
+            file: self.file_id,
+            span: self.spans[krate_index].span.clone(),
+        }
     }
 }
 
-use std::collections::HashSet;
+pub type KrateCoord = Coord;
+pub type CfgCoord = Coord;
 
-/// Simplified copy of what cargo tree does to display dependency graphs.
-/// In our case, we only care about the inverted form, ie, not what the
-/// dependencies of a package are, but rather how a particular package
-/// is actually pulled in via 1 or more root crates
-pub struct TextGrapher<'a> {
-    krates: &'a Krates,
+#[derive(Clone)]
+pub struct Coord {
+    pub file: FileId,
+    pub span: Range<usize>,
 }
 
-const DWN: char = '│';
-const TEE: char = '├';
-const ELL: char = '└';
-const RGT: char = '─';
+impl Coord {
+    pub(crate) fn into_label(self) -> Label {
+        self.into()
+    }
+}
+
+impl Into<Label> for Coord {
+    fn into(self) -> Label {
+        Label::primary(self.file, self.span)
+    }
+}
 
 struct NodePrint<'a> {
-    krate: &'a Krate,
+    krate: &'a crate::Krate,
     id: krates::NodeId,
     kind: &'static str,
-}
-
-impl<'a> TextGrapher<'a> {
-    pub fn new(krates: &'a Krates) -> Self {
-        Self { krates }
-    }
-
-    pub fn write_graph(&self, id: &Kid) -> Result<String, Error> {
-        let mut out = String::with_capacity(1024);
-        let mut levels = Vec::new();
-        let mut visited = HashSet::new();
-
-        let node_id = self.krates.nid_for_kid(id).context("unable to find node")?;
-        let krate = &self.krates[node_id];
-
-        let np = NodePrint {
-            krate,
-            id: node_id,
-            kind: "",
-        };
-
-        self.write_parent(np, &mut out, &mut visited, &mut levels)?;
-
-        Ok(out)
-    }
-
-    fn write_parent(
-        &self,
-        np: NodePrint<'a>,
-        out: &mut String,
-        visited: &mut HashSet<krates::NodeId>,
-        levels_continue: &mut Vec<bool>,
-    ) -> Result<(), Error> {
-        use pg::visit::EdgeRef;
-        use std::fmt::Write;
-
-        let new = visited.insert(np.id);
-        let star = if new { "" } else { " (*)" };
-
-        if let Some((&last_continues, rest)) = levels_continue.split_last() {
-            for &continues in rest {
-                let c = if continues { DWN } else { ' ' };
-                write!(out, "{}   ", c)?;
-            }
-
-            let c = if last_continues { TEE } else { ELL };
-            write!(out, "{0}{1}{1} ", c, RGT)?;
-        }
-
-        match np.kind {
-            "" => writeln!(out, "{} v{}{}", np.krate.name, np.krate.version, star),
-            kind => writeln!(
-                out,
-                "({}) {} v{}{}",
-                kind, np.krate.name, np.krate.version, star
-            ),
-        }?;
-
-        if !new {
-            return Ok(());
-        }
-
-        let mut parents = smallvec::SmallVec::<[NodePrint<'a>; 10]>::new();
-        let graph = self.krates.graph();
-        for edge in graph.edges_directed(np.id, pg::Direction::Incoming) {
-            let parent_id = edge.source();
-            let parent = &graph[parent_id];
-
-            let kind = match edge.weight().kind {
-                DepKind::Normal => "",
-                DepKind::Dev => "dev",
-                DepKind::Build => "build",
-            };
-
-            parents.push(NodePrint {
-                krate: &parent.krate,
-                id: parent_id,
-                kind,
-            });
-        }
-
-        if !parents.is_empty() {
-            // Resolve uses Hash data types internally but we want consistent output ordering
-            parents.sort_by_key(|n| &n.krate.id);
-            self.write_parents(parents, out, visited, levels_continue)?;
-        }
-
-        Ok(())
-    }
-
-    fn write_parents(
-        &self,
-        parents: smallvec::SmallVec<[NodePrint<'a>; 10]>,
-        out: &mut String,
-        visited: &mut HashSet<krates::NodeId>,
-        levels_continue: &mut Vec<bool>,
-    ) -> Result<(), Error> {
-        let cont = parents.len() - 1;
-
-        for (i, parent) in parents.into_iter().enumerate() {
-            levels_continue.push(i < cont);
-            self.write_parent(parent, out, visited, levels_continue)?;
-            levels_continue.pop();
-        }
-
-        Ok(())
-    }
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_false(v: &bool) -> bool {
-    !v
-}
-
-#[allow(clippy::ptr_arg)]
-fn is_empty(v: &Vec<GraphNode>) -> bool {
-    v.is_empty()
-}
-
-fn is_normal(v: &'static str) -> bool {
-    v == ""
-}
-
-#[derive(serde::Serialize)]
-pub struct GraphNode {
-    name: String,
-    version: semver::Version,
-    #[serde(skip_serializing_if = "is_normal")]
-    kind: &'static str,
-    #[serde(skip_serializing_if = "is_false")]
-    repeat: bool,
-    #[serde(skip_serializing_if = "is_empty")]
-    parents: Vec<GraphNode>,
-}
-
-/// As with the textgrapher, only crates inclusion graphs, but in the form of
-/// a serializable object rather than a text string
-pub struct ObjectGrapher<'a> {
-    krates: &'a Krates,
-}
-
-impl<'a> ObjectGrapher<'a> {
-    pub fn new(krates: &'a Krates) -> Self {
-        Self { krates }
-    }
-
-    pub fn write_graph(&self, id: &Kid) -> Result<GraphNode, Error> {
-        let mut visited = HashSet::new();
-
-        let node_id = self.krates.nid_for_kid(id).context("unable to find node")?;
-        let krate = &self.krates[node_id];
-
-        let np = NodePrint {
-            krate,
-            id: node_id,
-            kind: "",
-        };
-
-        Ok(self.write_parent(np, &mut visited)?)
-    }
-
-    fn write_parent(
-        &self,
-        np: NodePrint<'a>,
-        visited: &mut HashSet<krates::NodeId>,
-    ) -> Result<GraphNode, Error> {
-        use pg::visit::EdgeRef;
-
-        let repeat = !visited.insert(np.id);
-
-        let mut node = GraphNode {
-            name: np.krate.name.clone(),
-            version: np.krate.version.clone(),
-            kind: np.kind,
-            repeat,
-            parents: Vec::new(),
-        };
-
-        if repeat {
-            return Ok(node);
-        }
-
-        let mut parents = smallvec::SmallVec::<[NodePrint<'a>; 10]>::new();
-        let graph = self.krates.graph();
-        for edge in graph.edges_directed(np.id, pg::Direction::Incoming) {
-            let parent_id = edge.source();
-            let parent = &graph[parent_id];
-
-            let kind = match edge.weight().kind {
-                DepKind::Normal => "",
-                DepKind::Dev => "dev",
-                DepKind::Build => "build",
-            };
-
-            parents.push(NodePrint {
-                krate: &parent.krate,
-                id: parent_id,
-                kind,
-            });
-        }
-
-        if !parents.is_empty() {
-            // Resolve uses Hash data types internally but we want consistent output ordering
-            parents.sort_by_key(|n| &n.krate.id);
-            node.parents.reserve(parents.len());
-
-            for parent in parents {
-                let pnode = self.write_parent(parent, visited)?;
-                node.parents.push(pnode);
-            }
-        }
-
-        Ok(node)
-    }
 }

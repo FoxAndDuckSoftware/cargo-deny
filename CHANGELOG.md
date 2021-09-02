@@ -6,6 +6,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+### Added
+- [PR#353](https://github.com/EmbarkStudios/cargo-deny/pull/353) resolved [#351](https://github.com/EmbarkStudios/cargo-deny/issues/351) by adding the `sources.private` field to blanket allow git repositories sourced from a particular url.
+- [PR#359](https://github.com/EmbarkStudios/cargo-deny/pull/359) resolved [#341](https://github.com/EmbarkStudios/cargo-deny/issues/341) and [#357](https://github.com/EmbarkStudios/cargo-deny/issues/357) by adding support for the [`--frozen`, `--locked`, and `--offline`](https://doc.rust-lang.org/cargo/commands/cargo-metadata.html#manifest-options) flags to determine whether network access is allowed, and whether the `Cargo.lock` file can be created and/or modified.
+### Changed
+- [PR#358](https://github.com/EmbarkStudios/cargo-deny/pull/358) bumped the Minimum Stable Rust Version to **1.53.0**.
+- [PR#358](https://github.com/EmbarkStudios/cargo-deny/pull/358) bumped various dependencies, notably `semver` to `1.0.3`.
+
+## [0.9.1] - 2021-03-26
+### Changed
+- Updated dependencies
+
+## [0.9.0] - 2021-03-11
+### Changed
+- Updated `krates`, which in turn uses an updated `cargo_metadata` which uses [`camino`](https://docs.rs/camino) for utf-8 paths. Rather than support both vanilla Path/Buf and Utf8Path/Buf, cargo-deny now just uses Utf8Path/Buf, which means that non-utf-8 paths for things like your Cargo.toml manifest or license paths will no longer function. This is a breaking change, that can be reverted if it is disruptive for users, but the assumption is that cargo-deny is operating on normal checkouts of rust repositories that are overwhelmingly going to be utf-8 compatible paths.
+
+## [0.8.9] - 2021-03-08
+### Fixed
+- Updated rustsec crate to address fetch failures due to the renaming of the `master` branch to `main` for https://github.com/rustsec/advisory-db
+
+## [0.8.8] - 2021-02-25
+### Changed
+- Updated dependencies, notably `cargo` and `rustsec`.
+- Increase MSRV to `1.46.0` due to bump of `smol_str`/`rustsec`.
+- Updated SPDX license list supported from 3.8 to 3.11 due to update of `spdx`.
+- Add use of the `--locked` flag in all `cargo install` instructions, to avoid the default (broken) behavior as shown in [#331](https://github.com/EmbarkStudios/cargo-deny/issues/331).
+
+## [0.8.7] - 2021-02-18
+### Fixed
+- Resolved [#331](https://github.com/EmbarkStudios/cargo-deny/issues/331) by updating `bitvec` and `funty`.
+
+## [0.8.6] - 2021-02-17
+### Changed
+- Updated dependencies, notably `cargo`.
+- Updated documentation to clarify SPDX identifiers, and how to use custom ones.
+
+## [0.8.5] - 2020-12-15
+### Added
+- [PR#315](https://github.com/EmbarkStudios/cargo-deny/pull/315) resolved [#312](https://github.com/EmbarkStudios/cargo-deny/issues/312) by adding support for excluding packages in the deny configuration file, in addition to the existing support for the `--exclude` CLI option. Thanks [@luser](https://github.com/luser)!
+
+### Fixed
+- [PR#318](https://github.com/EmbarkStudios/cargo-deny/pull/318) fixed [#316](https://github.com/EmbarkStudios/cargo-deny/issues/316) by adding a workaround for crate versions with pre-release identifiers in them that could be erroneously marked as matching advisories in an advisory database. Thanks for reporting this [@djc](https://github.com/djc)!
+
+## [0.8.4] - 2020-11-11
+### Changed
+- Updated dependencies, notably `rustsec`, `crossbeam`*, and `cargo`.
+- Bumped the Minimum Stable Rust Version to **1.44.1**.
+
+## [0.8.3] - 2020-11-09
+### Fixed
+- Fix `deny.template.toml` to use `db-urls` instead of `db-url`.
+
+## [0.8.2] - 2020-10-22
+### Fixed
+- [PR#303](https://github.com/EmbarkStudios/cargo-deny/pull/303) fixed [#302](https://github.com/EmbarkStudios/cargo-deny/issues/302) by reverting an unintended behavior change in how the default path for advisory databases was resolved.
+
+## [0.8.1] - 2020-10-21
+### Fixed
+- [PR#297](https://github.com/EmbarkStudios/cargo-deny/pull/297) fixed a couple of diagnostics to have codes.
+- [PR#296](https://github.com/EmbarkStudios/cargo-deny/pull/296) resolved [#288](https://github.com/EmbarkStudios/cargo-deny/issues/288) by improving the information in diagnostics pertaining to advisories. Thanks [@tomasfarias](https://github.com/tomasfarias)!
+
+## [0.8.0] - 2020-10-20
+### Added
+- [PR#238](https://github.com/EmbarkStudios/cargo-deny/pull/238) resolved [#225](https://github.com/EmbarkStudios/cargo-deny/issues/225) by adding a `wrappers` field to `[bans.deny]` entries, which allows the banned crate to be used only if it is a direct dependency of one of the wrapper crates. Thanks [@Stupremee](https://github.com/Stupremee)!
+- [PR#244](https://github.com/EmbarkStudios/cargo-deny/pull/244) resolved [#69](https://github.com/EmbarkStudios/cargo-deny/issues/69) by adding support for multiple advisory databases, which will all be checked during the `advisory` check. Thanks [@Stupremee](https://github.com/Stupremee)!
+- [PR#243](https://github.com/EmbarkStudios/cargo-deny/pull/243) resolved [#54](https://github.com/EmbarkStudios/cargo-deny/issues/54) by adding support for compiling and using `cargo` crate directly via the `standalone` feature. This allows `cargo-deny` to be used without cargo being installed, but it still requires [**rustc**](https://github.com/EmbarkStudios/cargo-deny/issues/295) to be available. Thanks [@Stupremee](https://github.com/Stupremee)!
+- [PR#275](https://github.com/EmbarkStudios/cargo-deny/pull/275) resolved [#64](https://github.com/EmbarkStudios/cargo-deny/issues/64) by adding a diagnostic when a user tries to ignore an advisory identifier that doesn't exist in any database.
+- [PR#262](https://github.com/EmbarkStudios/cargo-deny/pull/262) added the `fix` subcommand, which was added to bring `cargo-deny` to feature parity with `cargo-audit` so that it can take over for `cargo-audit` as the [official frontend](https://github.com/EmbarkStudios/cargo-deny/issues/194) for the the [RustSec Advisory Database](https://github.com/RustSec/advisory-db).
+
+### Changed
+- `advisories.db-url` has been deprecated in favor of `advisories.db-urls` since multiple databses are now supported.
+- `advisories.db-path` is now no longer the directory into which the advisory database is cloned into, but rather a root directory where each unique database is placed in a canonicalized directory similar to how `.cargo/registry/index` directories work.
+- [PR#274](https://github.com/EmbarkStudios/cargo-deny/pull/274) resolved [#115](https://github.com/EmbarkStudios/cargo-deny/issues/115) by normalizing git urls. Thanks [@senden9](https://github.com/senden9)!
+
+### Fixed
+- [#265](https://github.com/EmbarkStudios/cargo-deny/issues/265) A transitive dependency (`smol_str`) forced the usage of the latest Rust stable version (1.46) which was unintended. We now state the MSRV in the README and check for it in CI so that changing the MSRV is a conscious decision.
+- [PR#287](https://github.com/EmbarkStudios/cargo-deny/pull/287) fixed [#286](https://github.com/EmbarkStudios/cargo-deny/issues/286), which could happen if using a git source where the representation differed slightly between the user specified id and the id used for dependencies.
+- [PR#249](https://github.com/EmbarkStudios/cargo-deny/pull/249) fixed [#190](https://github.com/EmbarkStudios/cargo-deny/issues/190) by printing a different diagnostic for when the path specified for a clarification license file could not be found. Thanks [@khodzha](https://github.com/khodzha)!
+
+## [0.7.3] - 2020-08-06
+### Added
+- [PR#237](https://github.com/EmbarkStudios/cargo-deny/pull/237) added the ability to allow git sources from entire `github.com`, `gitlab.com`, or `bitbucket.org` organizations.
+- [PR#237](https://github.com/EmbarkStudios/cargo-deny/pull/237) added the ability to lint the specifiers used for git sources.
+
 ## [0.7.2] - 2020-07-28
 ### Added
 - [PR#227](https://github.com/EmbarkStudios/cargo-deny/pull/227) Added a new `bans.wildcards` check to lint for version requirements of `"*"`, which can happen when using local or patched crates that aren't published to a registry. Thanks [@khodzha](https://github.com/khodzha)!
@@ -196,7 +279,20 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.7.2...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.9.1...HEAD
+[0.9.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.9.0...0.9.1
+[0.9.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.9...0.9.0
+[0.8.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.8...0.8.9
+[0.8.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.7...0.8.8
+[0.8.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.6...0.8.7
+[0.8.6]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.5...0.8.6
+[0.8.5]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.4...0.8.5
+[0.8.4]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.3...0.8.4
+[0.8.3]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.2...0.8.3
+[0.8.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.1...0.8.2
+[0.8.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.8.0...0.8.1
+[0.8.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.7.3...0.8.0
+[0.7.3]: https://github.com/EmbarkStudios/cargo-deny/compare/0.7.2...0.7.3
 [0.7.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.6.8...0.7.0
